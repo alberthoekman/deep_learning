@@ -3,32 +3,17 @@ import torch
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader
 from torch.optim import Optimizer
+from torchvision import transforms
 from typing import Callable, List
-import numpy as np
 import os
 from glob import glob
-import random
-import matplotlib as plt
+import matplotlib.pyplot as plt
 import cv2
-import matplotlib.gridspec as gridspec
-import seaborn as sns
-import zlib
-import itertools
-import sklearn
-from sklearn import model_selection
-from sklearn.model_selection import train_test_split
-from sklearn.model_selection import learning_curve
-from sklearn.model_selection import KFold
-from sklearn.model_selection import cross_val_score
-from sklearn.model_selection import StratifiedKFold
-from sklearn.utils import class_weight
-from sklearn.metrics import confusion_matrix
 
-PATH = os.path.abspath('data')
-SOURCE_IMAGES = os.path.join(PATH, "images")
+SOURCE_IMAGES = os.path.abspath('images')
 images = glob(os.path.join(SOURCE_IMAGES, "*.png"))
 
-labels = pd.read_csv('data/sample_labels.csv')
+labels = pd.read_csv('sample_labels.csv')
 
 
 def proc_images():
@@ -54,21 +39,26 @@ def proc_images():
     RareClass = ["Edema", "Emphysema", "Fibrosis", "Pneumonia", "Pleural_Thickening", "Cardiomegaly", "Hernia"]
     x = []  # images as arrays
     y = []  # labels
-    WIDTH = 128
-    HEIGHT = 128
-    for i in range(10):
-        img = images[i]
+
+    preprocess = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    for img in images:
         base = os.path.basename(img)
         # Read and resize image
         full_size_image = cv2.imread(img)
+        resized = cv2.resize(full_size_image, (256, 256), interpolation=cv2.INTER_CUBIC)
         findingString = labels["Finding Labels"][labels["Image Index"] == base].values[0]
         symbol = "|"
 
         if symbol in findingString:
             continue
         else:
-            resized = cv2.resize(full_size_image, (WIDTH, HEIGHT), interpolation=cv2.INTER_CUBIC).flatten()
-            x.append(torch.tensor(resized, dtype=torch.float))
+            x.append(preprocess(resized))
 
             if NoFinding in findingString:
                 finding = torch.tensor([1, 0, 0, 0, 0, 0, 0, 0], dtype=torch.float)
@@ -178,7 +168,11 @@ NUM_EPOCHS = 1
 
 # Process images and divide in train and test set.
 x, y = proc_images()
-x_train, x_val, y_train, y_val = train_test_split(x, y, test_size=0.2)
+cutoff = int(len(x) * 0.8)
+x_train = x[1:cutoff]
+x_val = x[cutoff+1:]
+y_train = y[1:cutoff]
+y_val = y[cutoff+1:]
 
 assert len(x_train) == len(y_train)
 assert len(x_val) == len(y_val)
@@ -196,22 +190,19 @@ val_dataset = TensorDataset(x_val, y_val)
 val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
 # Our neural network with 1 hidden layer.
-f = torch.nn.Sequential(
-    torch.nn.Linear(in_features=49152, out_features=24576),
-    torch.nn.Sigmoid(),
-    torch.nn.Linear(in_features=24576, out_features=8),
-).to(DEVICE)
+alexnet = torch.hub.load('pytorch/vision:v0.5.0', 'alexnet', pretrained=True)
+alexnet.classifier[6] = torch.nn.Linear(4096, 8)
 
 # Optimizer and loss function
-opt = torch.optim.Adam(f.parameters(), lr=1e-05)
+opt = torch.optim.Adam(alexnet.parameters(), lr=1e-05)
 loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean')
 
 train_losses = []
 val_losses = []
 
 for t in range(NUM_EPOCHS):
-    train_loss = train_epoch(f, train_dataloader, optimizer=opt, loss_fn=loss_function, device=DEVICE)
-    val_loss = eval_epoch(f, val_dataloader, loss_function, device=DEVICE)
+    train_loss = train_epoch(alexnet, train_dataloader, optimizer=opt, loss_fn=loss_function, device=DEVICE)
+    val_loss = eval_epoch(alexnet, val_dataloader, loss_function, device=DEVICE)
 
     print('Epoch {}'.format(t))
     print(' Training Loss: {}'.format(train_loss))
