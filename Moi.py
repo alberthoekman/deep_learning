@@ -10,10 +10,10 @@ from glob import glob
 import matplotlib.pyplot as plt
 import cv2
 
-SOURCE_IMAGES = os.path.abspath('images')
+SOURCE_IMAGES = os.path.abspath('/home/koenbuiten/Documents/deep_learning/data/sample/images')
 images = glob(os.path.join(SOURCE_IMAGES, "*.png"))
 
-labels = pd.read_csv('sample_labels.csv')
+labels = pd.read_csv('/home/koenbuiten/Documents/deep_learning/data/sample/sample_labels.csv')
 
 
 def proc_images():
@@ -164,7 +164,8 @@ def eval_epoch(network: torch.nn.Module,
 
 # ====================================================================================================
 DEVICE = 'cpu'
-NUM_EPOCHS = 1
+NUM_EPOCHS = 2
+0
 
 # Process images and divide in train and test set.
 x, y = proc_images()
