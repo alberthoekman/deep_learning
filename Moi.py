@@ -162,56 +162,94 @@ def eval_epoch(network: torch.nn.Module,
     return loss
 
 
+def run(modelId, epochs, preTrained, featureExtract):
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Process images and divide in train and test set.
+    x, y = proc_images()
+    cutoff = int(len(x) * 0.8)
+    x_train = x[1:cutoff]
+    x_val = x[cutoff + 1:]
+    y_train = y[1:cutoff]
+    y_val = y[cutoff + 1:]
+
+    assert len(x_train) == len(y_train)
+    assert len(x_val) == len(y_val)
+
+    # Put list of tensors into one tensor and normalise RGB values between 0 and 1.
+    x_train = torch.stack(x_train) / 255.0
+    x_val = torch.stack(x_val) / 255.0
+    y_train = torch.stack(y_train)
+    y_val = torch.stack(y_val)
+
+    # Dataset and dataloader for pytorch.
+    train_dataset = TensorDataset(x_train, y_train)
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_dataset = TensorDataset(x_val, y_val)
+    val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+    # Neural network to use.
+    if modelId == 'alexnet':
+        model = torch.hub.load('pytorch/vision:v0.5.0', 'alexnet', pretrained=preTrained)
+        paramsToLearn = featureExtract(model, featureExtract, 'class', 4096)
+    elif modelId == 'resnet18':
+        model = torch.hub.load('pytorch/vision:v0.5.0', 'resnet18', pretrained=preTrained)
+        paramsToLearn = featureExtract(model, featureExtract, 'fc', 512)
+    elif modelId == 'resnet152':
+        model = torch.hub.load('pytorch/vision:v0.5.0', 'resnet152', pretrained=preTrained)
+        paramsToLearn = featureExtract(model, featureExtract, 'fc', 512)
+    elif modelId == 'vgg':
+        model = torch.hub.load('pytorch/vision:v0.5.0', 'vgg19', pretrained=preTrained)
+        paramsToLearn = featureExtract(model, featureExtract, 'class', 4096)
+    elif modelId == 'vgg_bn':
+        model = torch.hub.load('pytorch/vision:v0.5.0', 'vgg19_bn', pretrained=preTrained)
+        paramsToLearn = featureExtract(model, featureExtract, 'class', 4096)
+
+    # Optimizer and loss function
+    opt = torch.optim.Adam(paramsToLearn, lr=1e-05)
+    loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean')
+
+    train_losses = []
+    val_losses = []
+
+    for t in range(epochs):
+        train_loss = train_epoch(model, train_dataloader, optimizer=opt, loss_fn=loss_function, device=DEVICE)
+        val_loss = eval_epoch(model, val_dataloader, loss_function, device=DEVICE)
+
+        print('Epoch {}'.format(t))
+        print(' Training Loss: {}'.format(train_loss))
+        print(' Validation Loss: {}'.format(val_loss))
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+
+    plt.plot(train_losses)
+    plt.plot(val_losses)
+    plt.legend(['Training', 'Validation'])
+    plt.show()
+
+
+def feature_extract(model, featureExtract, classOrFc, inputAmount):
+    paramsToLearn = []
+
+    # Set all features to not require training.
+    if featureExtract:
+        for param in model.parameters():
+            param.requires_grad = False
+
+    # Re-add the last layer (features of a new layer are set to requires_grad = True by default).
+    if classOrFc == 'class':
+        model.classifier[6] = torch.nn.Linear(inputAmount, 8)
+    elif classOrFc == 'fc':
+        model.fc = torch.nn.Linear(inputAmount, 8)
+
+    # Extract features that need training.
+    for param in model.parameters():
+        if param.requires_grad:
+            paramsToLearn.append(param)
+
+    return paramsToLearn
+
+
 # ====================================================================================================
-DEVICE = 'cpu'
-NUM_EPOCHS = 1
-
-# Process images and divide in train and test set.
-x, y = proc_images()
-cutoff = int(len(x) * 0.8)
-x_train = x[1:cutoff]
-x_val = x[cutoff+1:]
-y_train = y[1:cutoff]
-y_val = y[cutoff+1:]
-
-assert len(x_train) == len(y_train)
-assert len(x_val) == len(y_val)
-
-# Put list of tensors into one tensor and normalise RGB values between 0 and 1.
-x_train = torch.stack(x_train) / 255.0
-x_val = torch.stack(x_val) / 255.0
-y_train = torch.stack(y_train)
-y_val = torch.stack(y_val)
-
-# Dataset and dataloader for pytorch.
-train_dataset = TensorDataset(x_train, y_train)
-train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_dataset = TensorDataset(x_val, y_val)
-val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-
-# Our neural network with 1 hidden layer.
-alexnet = torch.hub.load('pytorch/vision:v0.5.0', 'alexnet', pretrained=True)
-alexnet.classifier[6] = torch.nn.Linear(4096, 8)
-
-# Optimizer and loss function
-opt = torch.optim.Adam(alexnet.parameters(), lr=1e-05)
-loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean')
-
-train_losses = []
-val_losses = []
-
-for t in range(NUM_EPOCHS):
-    train_loss = train_epoch(alexnet, train_dataloader, optimizer=opt, loss_fn=loss_function, device=DEVICE)
-    val_loss = eval_epoch(alexnet, val_dataloader, loss_function, device=DEVICE)
-
-    print('Epoch {}'.format(t))
-    print(' Training Loss: {}'.format(train_loss))
-    print(' Validation Loss: {}'.format(val_loss))
-
-    train_losses.append(train_loss)
-    val_losses.append(val_loss)
-
-plt.plot(train_losses)
-plt.plot(val_losses)
-plt.legend(['Training', 'Validation'])
-plt.show()
+run('resnet18', 1, True, False)
