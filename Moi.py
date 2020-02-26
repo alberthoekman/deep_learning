@@ -10,7 +10,7 @@ from glob import glob
 import matplotlib.pyplot as plt
 import cv2
 
-SOURCE_IMAGES = os.path.abspath('/home/koenbuiten/Documents/deep_learning/data/sample/images')
+SOURCE_IMAGES = os.path.abspath('/home/koenbuiten/Documents/deep_learning/data/sample/resizedImages')
 images = glob(os.path.join(SOURCE_IMAGES, "*.png"))
 
 labels = pd.read_csv('/home/koenbuiten/Documents/deep_learning/data/sample/sample_labels.csv')
@@ -50,8 +50,9 @@ def proc_images():
     for img in images:
         base = os.path.basename(img)
         # Read and resize image
-        full_size_image = cv2.imread(img)
-        resized = cv2.resize(full_size_image, (256, 256), interpolation=cv2.INTER_CUBIC)
+        # full_size_image = cv2.imread(img)
+        # resized = cv2.resize(full_size_image, (256, 256), interpolation=cv2.INTER_CUBIC)
+        resized = cv2.imread(img)
         findingString = labels["Finding Labels"][labels["Image Index"] == base].values[0]
         symbol = "|"
 
@@ -164,8 +165,8 @@ def eval_epoch(network: torch.nn.Module,
 
 # ====================================================================================================
 DEVICE = 'cpu'
-NUM_EPOCHS = 2
-0
+NUM_EPOCHS = 5
+
 
 # Process images and divide in train and test set.
 x, y = proc_images()
@@ -192,12 +193,12 @@ val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
 # Our neural network with 1 hidden layer.
 alexnet = torch.hub.load('pytorch/vision:v0.5.0', 'alexnet', pretrained=True)
-alexnet.classifier[6] = torch.nn.Linear(4096, 8)
+alexnet.classifier[6] = torch.nn.Linear(4096, 8) #https://github.com/pytorch/vision/blob/master/torchvision/models/alexnet.py
 
 # Optimizer and loss function
-opt = torch.optim.Adam(alexnet.parameters(), lr=1e-05)
-loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean')
-
+opt = torch.optim.Adam(alexnet.parameters(), lr=0.01) #refer to https://pytorch.org/docs/stable/optim.html
+# loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean') # https://pytorch.org/docs/stable/nn.html
+loss_function = torch.nn.MSELoss(reduction='mean')
 train_losses = []
 val_losses = []
 
