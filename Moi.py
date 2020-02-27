@@ -5,6 +5,7 @@ from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from torchvision import transforms
+from torchvision import datasets
 from typing import Callable, List
 import os
 from glob import glob
@@ -183,27 +184,44 @@ def run(modelId, epochs, preTrained, featureExtract, optim):
     DEVICE = 'cuda'
 
     # Process images and divide in train and test set.
-    x, y = proc_images()
-    cutoff = int(len(x) * 0.8)
-    x_train = x[1:cutoff]
-    x_val = x[cutoff + 1:]
-    y_train = y[1:cutoff]
-    y_val = y[cutoff + 1:]
+    #     x, y = proc_images()
+    #     cutoff = int(len(x) * 0.8)
+    #     x_train = x[1:cutoff]
+    #     x_val = x[cutoff + 1:]
+    #     y_train = y[1:cutoff]
+    #     y_val = y[cutoff + 1:]
 
-    assert len(x_train) == len(y_train)
-    assert len(x_val) == len(y_val)
+    #     assert len(x_train) == len(y_train)
+    #     assert len(x_val) == len(y_val)
 
     # Put list of tensors into one tensor and normalise RGB values between 0 and 1.
-    x_train = torch.stack(x_train) / 255.0
-    x_val = torch.stack(x_val) / 255.0
-    y_train = torch.stack(y_train)
-    y_val = torch.stack(y_val)
+    #     x_train = torch.stack(x_train) / 255.0
+    #     x_val = torch.stack(x_val) / 255.0
+    #     y_train = torch.stack(y_train)
+    #     y_val = torch.stack(y_val)
 
     # Dataset and dataloader for pytorch.
-    train_dataset = TensorDataset(x_train, y_train)
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_dataset = TensorDataset(x_val, y_val)
-    val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    #     train_dataset = TensorDataset(x_train, y_train)
+    #     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    #     val_dataset = TensorDataset(x_val, y_val)
+    #     val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+    transform1 = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    trainset = datasets.CIFAR10(root='./cifar', train=True,
+                                download=True, transform=transform1)
+    train_dataloader = torch.utils.data.DataLoader(trainset, batch_size=32,
+                                                   shuffle=True)
+
+    testset = datasets.CIFAR10(root='./cifar', train=False,
+                               download=True, transform=transform1)
+    val_dataloader = torch.utils.data.DataLoader(testset, batch_size=32,
+                                                 shuffle=False)
 
     # Neural network to use.
     if modelId == 'alexnet':
@@ -275,9 +293,9 @@ def feature_extract(model, featureExtract, classOrFc, inputAmount):
 
     # Re-add the last layer (features of a new layer are set to requires_grad = True by default).
     if classOrFc == 'class':
-        model.classifier[6] = torch.nn.Linear(inputAmount, 8)
+        model.classifier[6] = torch.nn.Linear(inputAmount, 10)
     elif classOrFc == 'fc':
-        model.fc = torch.nn.Linear(inputAmount, 8)
+        model.fc = torch.nn.Linear(inputAmount, 10)
 
     # Extract features that need training.
     for param in model.parameters():
@@ -288,41 +306,38 @@ def feature_extract(model, featureExtract, classOrFc, inputAmount):
 
 
 # ====================================================================================================
-print("vgg pre-trained")
-# run('vgg', 100, True, False, 'adam')
+print("vgg adam")
+run('vgg', 10, True, False, 'adam')
 
-print("vgg")
-# run('vgg', 100, False, False, 'adam')
+print("vgg adamw")
+run('vgg', 10, True, False, 'adamw')
 
-print("vgg_bn pre-trained")
-# run('vgg_bn', 100, True, False, 'adam')
+print("vgg sgd")
+run('vgg', 10, True, False, 'sgd')
 
-print("vgg_bn")
-# run('vgg_bn', 100, False, False, 'adam')
-
-print("alexnet pre-trained")
-run('alexnet', 100, True, False, 'adam')
+print("vgg sgdm")
+run('vgg', 10, True, False, 'sgdm')
 
 print("alexnet")
-run('alexnet', 100, False, False, 'adam')
+run('alexnet', 10, True, False, 'adam')
 
-print("resnet18 pre-trained")
-run('resnet18', 100, True, False, 'adam')
+print("alexnet adamw")
+run('alexnet', 10, True, False, 'adamw')
 
-print("resnet18")
-run('resnet18', 100, False, False, 'adam')
+print("alexnet sgd")
+run('alexnet', 10, True, False, 'sgd')
 
-print("resnet152 pre-trianed adam")
-run('resnet152', 100, True, False, 'adam')
+print("alexnet sgdm")
+run('alexnet', 10, True, False, 'sgdm')
 
 print("resnet152 adam")
-run('resnet152', 100, False, False, 'adam')
+run('resnet152', 10, True, False, 'adam')
 
 print("resnet152 adamW")
-run('resnet152', 100, True, False, 'adamw')
+run('resnet152', 10, True, False, 'adamw')
 
 print("resnet152 SGD")
-run('resnet152', 100, True, False, 'sgd')
+run('resnet152', 10, True, False, 'sgd')
 
 print("resnet152 SGDm")
-run('resnet152', 100, True, False, 'sgdm')
+run('resnet152', 10, True, False, 'sgdm')
