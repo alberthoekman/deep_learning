@@ -1,5 +1,6 @@
 import pandas as pd
 import torch
+import numpy as np
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader
 from torch.optim import Optimizer
@@ -61,33 +62,33 @@ def proc_images():
             x.append(preprocess(resized))
 
             if NoFinding in findingString:
-                finding = torch.tensor([1, 0, 0, 0, 0, 0, 0, 0], dtype=torch.float)
+                finding = torch.tensor(0, dtype=torch.long)
             elif Consolidation in findingString:
-                finding = torch.tensor([0, 1, 0, 0, 0, 0, 0, 0], dtype=torch.float)
+                finding = torch.tensor(1, dtype=torch.long)
             elif Infiltration in findingString:
-                finding = torch.tensor([0, 0, 1, 0, 0, 0, 0, 0], dtype=torch.float)
+                finding = torch.tensor(2, dtype=torch.long)
             elif Pneumothorax in findingString:
-                finding = torch.tensor([0, 0, 0, 1, 0, 0, 0, 0], dtype=torch.float)
+                finding = torch.tensor(3, dtype=torch.long)
             elif Edema in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 0, 0, 1], dtype=torch.float)
+                finding = torch.tensor(7, dtype=torch.long)
             elif Emphysema in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 0, 0, 1], dtype=torch.float)
+                finding = torch.tensor(7, dtype=torch.long)
             elif Fibrosis in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 0, 0, 1], dtype=torch.float)
+                finding = torch.tensor(7, dtype=torch.long)
             elif Effusion in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 1, 0, 0, 0], dtype=torch.float)
+                finding = torch.tensor(4, dtype=torch.long)
             elif Pneumonia in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 0, 0, 1], dtype=torch.float)
+                finding = torch.tensor(7, dtype=torch.long)
             elif Pleural_Thickening in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 0, 0, 1], dtype=torch.float)
+                finding = torch.tensor(7, dtype=torch.long)
             elif Cardiomegaly in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 0, 0, 1], dtype=torch.float)
+                finding = torch.tensor(7, dtype=torch.long)
             elif NoduleMass in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 1, 0, 0], dtype=torch.float)
+                finding = torch.tensor(5, dtype=torch.long)
             elif Hernia in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 0, 0, 1], dtype=torch.float)
+                finding = torch.tensor(7, dtype=torch.long)
             elif Atelectasis in findingString:
-                finding = torch.tensor([0, 0, 0, 0, 0, 0, 1, 0], dtype=torch.float)
+                finding = torch.tensor(6, dtype=torch.long)
             else:
                 del x[-1]
                 continue
@@ -102,16 +103,18 @@ def train_batch(network: torch.nn.Module,  # the network
                 # a function from a FloatTensor (prediction) and a FloatTensor (Y) to a FloatTensor (the loss)
                 loss_fn: Callable[[torch.FloatTensor, torch.FloatTensor], torch.FloatTensor],
                 # the optimizer
-                optimizer: Optimizer) -> float:
+                optimizer: Optimizer):
     network.train()
 
-    prediction_batch = network(X_batch)  # forward pass
+    prediction_batch = network.forward(X_batch)  # forward pass
+    _, preds = torch.max(prediction_batch, 1)
     batch_loss = loss_fn(prediction_batch, Y_batch)  # loss calculation
+    batch_correct = (Y_batch.eq(preds.long())).double().sum().item()
     batch_loss.backward()  # gradient computation
     optimizer.step()  # back-propagation
     optimizer.zero_grad()  # gradient reset
 
-    return batch_loss.item()
+    return batch_loss.item(), batch_correct, np.float(preds.size(0))
 
 
 def train_epoch(network: torch.nn.Module,
@@ -119,51 +122,65 @@ def train_epoch(network: torch.nn.Module,
                 dataloader: DataLoader,
                 loss_fn: Callable[[torch.FloatTensor, torch.FloatTensor], torch.FloatTensor],
                 optimizer: Optimizer,
-                device: str) -> float:
+                device: str):
     loss = 0.
+    correct = 0
+    total = 0
 
     for i, (x_batch, y_batch) in enumerate(dataloader):
         x_batch = x_batch.to(device)  # convert back to your chosen device
         y_batch = y_batch.to(device)
-        loss += train_batch(network=network, X_batch=x_batch, Y_batch=y_batch, loss_fn=loss_fn, optimizer=optimizer)
+        loss_batch, correct_batch, total_batch = train_batch(network=network, X_batch=x_batch, Y_batch=y_batch,
+                                                             loss_fn=loss_fn, optimizer=optimizer)
+        loss += loss_batch
+        correct += correct_batch
+        total += total_batch
 
     loss /= (i + 1)  # divide loss by number of batches for consistency
 
-    return loss
+    return loss, correct / total
 
 
 def eval_batch(network: torch.nn.Module,  # the network
                X_batch: torch.FloatTensor,  # the X batch
                Y_batch: torch.FloatTensor,  # the Y batch
-               loss_fn: Callable[[torch.FloatTensor, torch.FloatTensor], torch.FloatTensor]) -> float:
+               loss_fn: Callable[[torch.FloatTensor, torch.FloatTensor], torch.FloatTensor]):
     network.eval()
 
     with torch.no_grad():
-        prediction_batch = network(X_batch)  # forward pass
+        prediction_batch = network.forward(X_batch)  # forward pass
+        _, preds = torch.max(prediction_batch, 1)
         batch_loss = loss_fn(prediction_batch, Y_batch)  # loss calculation
+        batch_correct = (Y_batch.eq(preds.long())).double().sum().item()
 
-    return batch_loss.item()
+    return batch_loss.item(), batch_correct, np.float(preds.size(0))
 
 
 def eval_epoch(network: torch.nn.Module,
                # a list of data points x
                dataloader: DataLoader,
                loss_fn: Callable[[torch.FloatTensor, torch.FloatTensor], torch.FloatTensor],
-               device: str) -> float:
+               device: str):
     loss = 0.
+    correct = 0
+    total = 0
 
     for i, (x_batch, y_batch) in enumerate(dataloader):
         x_batch = x_batch.to(device)
         y_batch = y_batch.to(device)
-        loss += eval_batch(network=network, X_batch=x_batch, Y_batch=y_batch, loss_fn=loss_fn)
+        loss_batch, correct_batch, total_batch = eval_batch(network=network, X_batch=x_batch, Y_batch=y_batch,
+                                                            loss_fn=loss_fn)
+        loss += loss_batch
+        correct += correct_batch
+        total += total_batch
 
     loss /= (i + 1)
 
-    return loss
+    return loss, correct / total
 
 
-def run(modelId, epochs, preTrained, featureExtract):
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def run(modelId, epochs, preTrained, featureExtract, optim):
+    DEVICE = 'cuda'
 
     # Process images and divide in train and test set.
     x, y = proc_images()
@@ -191,42 +208,61 @@ def run(modelId, epochs, preTrained, featureExtract):
     # Neural network to use.
     if modelId == 'alexnet':
         model = torch.hub.load('pytorch/vision:v0.5.0', 'alexnet', pretrained=preTrained)
-        paramsToLearn = featureExtract(model, featureExtract, 'class', 4096)
+        paramsToLearn = feature_extract(model, featureExtract, 'class', 4096)
     elif modelId == 'resnet18':
         model = torch.hub.load('pytorch/vision:v0.5.0', 'resnet18', pretrained=preTrained)
-        paramsToLearn = featureExtract(model, featureExtract, 'fc', 512)
+        paramsToLearn = feature_extract(model, featureExtract, 'fc', 512)
     elif modelId == 'resnet152':
         model = torch.hub.load('pytorch/vision:v0.5.0', 'resnet152', pretrained=preTrained)
-        paramsToLearn = featureExtract(model, featureExtract, 'fc', 512)
+        paramsToLearn = feature_extract(model, featureExtract, 'fc', 2048)
     elif modelId == 'vgg':
         model = torch.hub.load('pytorch/vision:v0.5.0', 'vgg19', pretrained=preTrained)
-        paramsToLearn = featureExtract(model, featureExtract, 'class', 4096)
+        paramsToLearn = feature_extract(model, featureExtract, 'class', 4096)
     elif modelId == 'vgg_bn':
         model = torch.hub.load('pytorch/vision:v0.5.0', 'vgg19_bn', pretrained=preTrained)
-        paramsToLearn = featureExtract(model, featureExtract, 'class', 4096)
+        paramsToLearn = feature_extract(model, featureExtract, 'class', 4096)
 
-    # Optimizer and loss function
-    opt = torch.optim.Adam(paramsToLearn, lr=1e-05)
-    loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean')
+    model.to(DEVICE)
+
+    if optim == 'adam':
+        opt = torch.optim.Adam(paramsToLearn)
+    elif optim == 'adamw':
+        opt = torch.optim.Adam(paramsToLearn, weight_decay=0.01)
+    elif optim == 'sgd':
+        opt = torch.optim.SGD(paramsToLearn)
+    elif optim == 'sgdm':
+        opt = torch.optim.SGD(paramsToLearn, lr=0.01, momentum=0.9)
+
+    loss_function = torch.nn.CrossEntropyLoss()
 
     train_losses = []
     val_losses = []
 
+    train_accs = []
+    val_accs = []
+
     for t in range(epochs):
-        train_loss = train_epoch(model, train_dataloader, optimizer=opt, loss_fn=loss_function, device=DEVICE)
-        val_loss = eval_epoch(model, val_dataloader, loss_function, device=DEVICE)
+        train_loss, train_acc = train_epoch(model, train_dataloader, optimizer=opt, loss_fn=loss_function,
+                                            device=DEVICE)
+        val_loss, val_acc = eval_epoch(model, val_dataloader, loss_function, device=DEVICE)
 
         print('Epoch {}'.format(t))
-        print(' Training Loss: {}'.format(train_loss))
-        print(' Validation Loss: {}'.format(val_loss))
+        print('Training Loss: {}'.format(train_loss))
+        print('Training Accuracy: {}'.format(train_acc))
+        print('Validation Loss: {}'.format(val_loss))
+        print('Validation Accuracy: {}'.format(val_acc))
 
         train_losses.append(train_loss)
+        train_accs.append(train_acc)
         val_losses.append(val_loss)
+        val_accs.append(val_acc)
 
-    plt.plot(train_losses)
-    plt.plot(val_losses)
-    plt.legend(['Training', 'Validation'])
-    plt.show()
+    print('Training Loss: {}'.format(train_losses[len(train_losses) - 1]))
+    print('Validation Loss: {}'.format(val_losses[len(val_losses) - 1]))
+    # plt.plot(train_losses)
+    # plt.plot(val_losses)
+    # plt.legend(['Training', 'Validation'])
+    # plt.show()
 
 
 def feature_extract(model, featureExtract, classOrFc, inputAmount):
@@ -252,4 +288,41 @@ def feature_extract(model, featureExtract, classOrFc, inputAmount):
 
 
 # ====================================================================================================
-run('resnet18', 1, True, False)
+print("vgg pre-trained")
+# run('vgg', 100, True, False, 'adam')
+
+print("vgg")
+# run('vgg', 100, False, False, 'adam')
+
+print("vgg_bn pre-trained")
+# run('vgg_bn', 100, True, False, 'adam')
+
+print("vgg_bn")
+# run('vgg_bn', 100, False, False, 'adam')
+
+print("alexnet pre-trained")
+run('alexnet', 100, True, False, 'adam')
+
+print("alexnet")
+run('alexnet', 100, False, False, 'adam')
+
+print("resnet18 pre-trained")
+run('resnet18', 100, True, False, 'adam')
+
+print("resnet18")
+run('resnet18', 100, False, False, 'adam')
+
+print("resnet152 pre-trianed adam")
+run('resnet152', 100, True, False, 'adam')
+
+print("resnet152 adam")
+run('resnet152', 100, False, False, 'adam')
+
+print("resnet152 adamW")
+run('resnet152', 100, True, False, 'adamw')
+
+print("resnet152 SGD")
+run('resnet152', 100, True, False, 'sgd')
+
+print("resnet152 SGDm")
+run('resnet152', 100, True, False, 'sgdm')
