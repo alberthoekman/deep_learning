@@ -1,5 +1,6 @@
 import pandas as pd
 import torch
+import time
 import numpy as np
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader
@@ -11,11 +12,243 @@ import os
 from glob import glob
 import matplotlib.pyplot as plt
 import cv2
+import torch.nn as nn
+import torch.nn.functional as F
+import csv
+import torch.backends.cudnn as cudnn
 
-SOURCE_IMAGES = os.path.abspath('images')
-images = glob(os.path.join(SOURCE_IMAGES, "*.png"))
 
-labels = pd.read_csv('sample_labels.csv')
+# SOURCE_IMAGES = os.path.abspath('images')
+# images = glob(os.path.join(SOURCE_IMAGES, "*.png"))
+
+# labels = pd.read_csv('sample_labels.csv')
+
+# ResNet
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes)
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(self.expansion * planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes)
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
+class ResNet(nn.Module):
+    def __init__(self, block, num_blocks, num_classes=10):
+        super(ResNet, self).__init__()
+        self.in_planes = 64
+
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.linear = nn.Linear(512 * block.expansion, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
+def ResNet18():
+    return ResNet(BasicBlock, [2, 2, 2, 2])
+
+
+def ResNet34():
+    return ResNet(BasicBlock, [3, 4, 6, 3])
+
+
+def ResNet50():
+    return ResNet(Bottleneck, [3, 4, 6, 3])
+
+
+def ResNet101():
+    return ResNet(Bottleneck, [3, 4, 23, 3])
+
+
+def ResNet152():
+    return ResNet(Bottleneck, [3, 8, 36, 3])
+
+
+# ResNext
+class Block(nn.Module):
+    '''Grouped convolution block.'''
+    expansion = 2
+
+    def __init__(self, in_planes, cardinality=32, bottleneck_width=4, stride=1):
+        super(Block, self).__init__()
+        group_width = cardinality * bottleneck_width
+        self.conv1 = nn.Conv2d(in_planes, group_width, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(group_width)
+        self.conv2 = nn.Conv2d(group_width, group_width, kernel_size=3, stride=stride, padding=1, groups=cardinality,
+                               bias=False)
+        self.bn2 = nn.BatchNorm2d(group_width)
+        self.conv3 = nn.Conv2d(group_width, self.expansion * group_width, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(self.expansion * group_width)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * group_width:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * group_width, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * group_width)
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
+class ResNeXt(nn.Module):
+    def __init__(self, num_blocks, cardinality, bottleneck_width, num_classes=10):
+        super(ResNeXt, self).__init__()
+        self.cardinality = cardinality
+        self.bottleneck_width = bottleneck_width
+        self.in_planes = 64
+
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layer1 = self._make_layer(num_blocks[0], 1)
+        self.layer2 = self._make_layer(num_blocks[1], 2)
+        self.layer3 = self._make_layer(num_blocks[2], 2)
+        # self.layer4 = self._make_layer(num_blocks[3], 2)
+        self.linear = nn.Linear(cardinality * bottleneck_width * 8, num_classes)
+
+    def _make_layer(self, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(Block(self.in_planes, self.cardinality, self.bottleneck_width, stride))
+            self.in_planes = Block.expansion * self.cardinality * self.bottleneck_width
+        # Increase bottleneck_width by 2 after each stage.
+        self.bottleneck_width *= 2
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        # out = self.layer4(out)
+        out = F.avg_pool2d(out, 8)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
+def ResNeXt29_2x64d():
+    return ResNeXt(num_blocks=[3, 3, 3], cardinality=2, bottleneck_width=64)
+
+
+def ResNeXt29_4x64d():
+    return ResNeXt(num_blocks=[3, 3, 3], cardinality=4, bottleneck_width=64)
+
+
+def ResNeXt29_8x64d():
+    return ResNeXt(num_blocks=[3, 3, 3], cardinality=8, bottleneck_width=64)
+
+
+def ResNeXt29_32x4d():
+    return ResNeXt(num_blocks=[3, 3, 3], cardinality=32, bottleneck_width=4)
+
+
+# VGG
+cfg = {
+    'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+    'VGG13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+    'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
+    'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512, 'M'],
+}
+
+
+class VGG(nn.Module):
+    def __init__(self, vgg_name):
+        super(VGG, self).__init__()
+        self.features = self._make_layers(cfg[vgg_name])
+        self.classifier = nn.Linear(512, 10)
+
+    def forward(self, x):
+        out = self.features(x)
+        out = out.view(out.size(0), -1)
+        out = self.classifier(out)
+        return out
+
+    def _make_layers(self, cfg):
+        layers = []
+        in_channels = 3
+        for x in cfg:
+            if x == 'M':
+                layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+            else:
+                layers += [nn.Conv2d(in_channels, x, kernel_size=3, padding=1),
+                           nn.BatchNorm2d(x),
+                           nn.ReLU(inplace=True)]
+                in_channels = x
+        layers += [nn.AvgPool2d(kernel_size=1, stride=1)]
+        return nn.Sequential(*layers)
 
 
 def proc_images():
@@ -180,7 +413,7 @@ def eval_epoch(network: torch.nn.Module,
     return loss, correct / total
 
 
-def run(modelId, epochs, preTrained, featureExtract, optim):
+def run(modelId, epochs, optim):
     DEVICE = 'cuda'
 
     # Process images and divide in train and test set.
@@ -206,50 +439,48 @@ def run(modelId, epochs, preTrained, featureExtract, optim):
     #     val_dataset = TensorDataset(x_val, y_val)
     #     val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
-    transform1 = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
     trainset = datasets.CIFAR10(root='./cifar', train=True,
-                                download=True, transform=transform1)
+                                download=True, transform=transform_train)
     train_dataloader = torch.utils.data.DataLoader(trainset, batch_size=32,
                                                    shuffle=True)
 
     testset = datasets.CIFAR10(root='./cifar', train=False,
-                               download=True, transform=transform1)
+                               download=True, transform=transform_test)
     val_dataloader = torch.utils.data.DataLoader(testset, batch_size=32,
                                                  shuffle=False)
 
     # Neural network to use.
-    if modelId == 'alexnet':
-        model = torch.hub.load('pytorch/vision:v0.5.0', 'alexnet', pretrained=preTrained)
-        paramsToLearn = feature_extract(model, featureExtract, 'class', 4096)
-    elif modelId == 'resnet18':
-        model = torch.hub.load('pytorch/vision:v0.5.0', 'resnet18', pretrained=preTrained)
-        paramsToLearn = feature_extract(model, featureExtract, 'fc', 512)
-    elif modelId == 'resnet152':
-        model = torch.hub.load('pytorch/vision:v0.5.0', 'resnet152', pretrained=preTrained)
-        paramsToLearn = feature_extract(model, featureExtract, 'fc', 2048)
+    if modelId == 'resnext':
+        model = ResNeXt29_2x64d()
+    elif modelId == 'resnet':
+        model = ResNet18()
     elif modelId == 'vgg':
-        model = torch.hub.load('pytorch/vision:v0.5.0', 'vgg19', pretrained=preTrained)
-        paramsToLearn = feature_extract(model, featureExtract, 'class', 4096)
-    elif modelId == 'vgg_bn':
-        model = torch.hub.load('pytorch/vision:v0.5.0', 'vgg19_bn', pretrained=preTrained)
-        paramsToLearn = feature_extract(model, featureExtract, 'class', 4096)
+        model = VGG("VGG16")
 
     model.to(DEVICE)
+    model = torch.nn.DataParallel(model)
+    cudnn.benchmark = True
 
     if optim == 'adam':
-        opt = torch.optim.Adam(paramsToLearn)
+        opt = torch.optim.Adam(model.parameters(), lr=0.1)
     elif optim == 'adamw':
-        opt = torch.optim.Adam(paramsToLearn, weight_decay=0.01)
+        opt = torch.optim.Adam(model.parameters(), lr=0.1, weight_decay=0.01)
     elif optim == 'sgd':
-        opt = torch.optim.SGD(paramsToLearn)
+        opt = torch.optim.SGD(model.parameters(), lr=0.1)
     elif optim == 'sgdm':
-        opt = torch.optim.SGD(paramsToLearn, lr=0.01, momentum=0.9)
+        opt = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
 
     loss_function = torch.nn.CrossEntropyLoss()
 
@@ -259,24 +490,32 @@ def run(modelId, epochs, preTrained, featureExtract, optim):
     train_accs = []
     val_accs = []
 
+    with open(str(modelId) + '_' + str(optim) + '.csv', 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Epoch", "Training Loss", "Validation Loss", "Training Accuracy", "Validation Accuracy"])
+
     for t in range(epochs):
+        print('Epoch {}'.format(t))
+        print('Time before: {}'.format(time.perf_counter()))
         train_loss, train_acc = train_epoch(model, train_dataloader, optimizer=opt, loss_fn=loss_function,
                                             device=DEVICE)
         val_loss, val_acc = eval_epoch(model, val_dataloader, loss_function, device=DEVICE)
 
-        print('Epoch {}'.format(t))
         print('Training Loss: {}'.format(train_loss))
         print('Training Accuracy: {}'.format(train_acc))
+        print()
         print('Validation Loss: {}'.format(val_loss))
         print('Validation Accuracy: {}'.format(val_acc))
+        print()
+        print('Time after: {}'.format(time.perf_counter()))
+        print()
 
-        train_losses.append(train_loss)
-        train_accs.append(train_acc)
-        val_losses.append(val_loss)
-        val_accs.append(val_acc)
-
-    print('Training Loss: {}'.format(train_losses[len(train_losses) - 1]))
-    print('Validation Loss: {}'.format(val_losses[len(val_losses) - 1]))
+        with open(str(modelId) + '_' + str(optim) + '.csv', 'a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([t, train_loss, val_loss, train_acc, val_acc])
+    print('============================================================================')
+    # print('Training Loss: {}'.format(train_losses[len(train_losses)-1]))
+    # print('Validation Loss: {}'.format(val_losses[len(val_losses)-1]))
     # plt.plot(train_losses)
     # plt.plot(val_losses)
     # plt.legend(['Training', 'Validation'])
@@ -307,37 +546,37 @@ def feature_extract(model, featureExtract, classOrFc, inputAmount):
 
 # ====================================================================================================
 print("vgg adam")
-run('vgg', 10, True, False, 'adam')
+run('vgg', 15, 'adam')
 
 print("vgg adamw")
-run('vgg', 10, True, False, 'adamw')
+run('vgg', 15, 'adamw')
 
 print("vgg sgd")
-run('vgg', 10, True, False, 'sgd')
+run('vgg', 15, 'sgd')
 
 print("vgg sgdm")
-run('vgg', 10, True, False, 'sgdm')
+run('vgg', 15, 'sgdm')
 
-print("alexnet")
-run('alexnet', 10, True, False, 'adam')
+print("resnet adam")
+run('resnet', 15, 'adam')
 
-print("alexnet adamw")
-run('alexnet', 10, True, False, 'adamw')
+print("resnet adamw")
+run('resnet', 15, 'adamw')
 
-print("alexnet sgd")
-run('alexnet', 10, True, False, 'sgd')
+print("resnet sgd")
+run('resnet', 15, 'sgd')
 
-print("alexnet sgdm")
-run('alexnet', 10, True, False, 'sgdm')
+print("resnet sgdm")
+run('resnet', 15, 'sgdm')
 
-print("resnet152 adam")
-run('resnet152', 10, True, False, 'adam')
+print("resnext adam")
+run('resnext', 15, 'adam')
 
-print("resnet152 adamW")
-run('resnet152', 10, True, False, 'adamw')
+print("resnext adamw")
+run('resnext', 15, 'adamw')
 
-print("resnet152 SGD")
-run('resnet152', 10, True, False, 'sgd')
+print("resnext sgd")
+run('resnext', 15, 'sgd')
 
-print("resnet152 SGDm")
-run('resnet152', 10, True, False, 'sgdm')
+print("resnext sgdm")
+run('resnext', 15, 'sgdm')
